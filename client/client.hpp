@@ -1,66 +1,55 @@
-#include <cstdio>
+
 #include <iostream>
 #include <boost/asio.hpp>
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <algorithm>
-#include <iomanip>
+#include <boost/beast.hpp>
 
-using namespace boost;
-using namespace std;
-using namespace boost::asio::ip;
+namespace beast = boost::beast;         // from <boost/beast.hpp>
+namespace http = beast::http;           // from <boost/beast/http.hpp>
+namespace websocket = beast::websocket; // from <boost/beast/websocket.hpp>
+namespace net = boost::asio;            // from <boost/asio.hpp>
+using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
-void client_contact(const string msg2)
+class WebSocketClient
 {
-  cout << "send request" << endl;
-  int port = 8000;
-  try
+public:
+  explicit WebSocketClient(net::io_context &ioc, const std::string &host, const std::string &port)
+      : resolver_(ioc), ws_(ioc)
   {
-    boost::asio::io_service io_service;
-    // socket creation
-    tcp::socket socket(io_service);
-    // connection
-    socket.connect(tcp::endpoint(boost::asio::ip::address::from_string("localhost"), port));
-    // request/message from client
-    const string msg = msg2;
-    boost::system::error_code error;
-    boost::asio::write(socket, boost::asio::buffer(msg), error);
-    if (!error)
-    {
-      if (msg2 == "id_request\n")
-      {
-        std::cout << "bank sent id_request" << std::endl;
-      }
-    }
-    else
-    {
-      cout << "send failed: " << error.message() << endl;
-    }
+    // Resolver
+    auto results = resolver_.resolve(host, port);
+    beast::get_lowest_layer(ws_).connect(results);
 
-    // getting response from server
-    boost::asio::streambuf buf;
-    boost::asio::read_until(socket, buf, "\n");
-
-    if (error && error != boost::asio::error::eof)
-    {
-      cout << "receive failed: " << error.message() << endl;
-    }
-    else
-    {
-      std::string message = boost::asio::buffer_cast<const char *>(buf.data());
-
-      std::cout << message << std::endl;
-
-      if (msg == "id_request\n")
-      {
-        int id = std::stoi(message);
-        cout << "id :" << id << endl;
-      }
-    }
+    // Handshake
+    ws_.handshake(host, "/");
   }
-  catch (std::exception &e)
+
+  void send(const std::string &message)
   {
-    std::cerr << "Exception: " << e.what() << "\n";
+    ws_.write(net::buffer(message));
   }
-}
+
+  void receive()
+  {
+    ws_.async_read(buffer_, [this](beast::error_code ec, std::size_t)
+                   {
+            if (ec == websocket::error::closed) {
+                std::cout << "Connexion fermée par le serveur" << std::endl;
+            } else if (ec) {
+                std::cerr << "Erreur de lecture : " << ec.message() << std::endl;
+            } else {
+                std::cout << "Reçu : " << beast::buffers_to_string(buffer_.data()) << std::endl;
+                buffer_.consume(buffer_.size());
+                receive();  // Continuer à recevoir
+            } });
+  }
+
+  void close()
+  {
+    ws_.close(websocket::close_code::normal);
+  }
+
+private:
+  tcp::resolver resolver_;
+  websocket::stream<beast::tcp_stream> ws_;
+  beast::flat_buffer buffer_;
+};
